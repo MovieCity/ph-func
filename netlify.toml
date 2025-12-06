@@ -1,0 +1,4 @@
+[[redirects]]
+from = "/ph/*"
+to = "/.netlify/functions/ph"
+status = 200
