@@ -4,6 +4,7 @@ export default async (req: Request, context: Context) => {
   const url = new URL(req.url);
   const path = url.pathname;
 
+  // Extracts the alphanumeric ID (e.g., okbhbukcff5) from your request path
   const match = path.match(/\/xv\/([a-zA-Z0-9]+)/);
   if (!match) return new Response("Not Found", { status: 404 });
 
@@ -13,7 +14,7 @@ export default async (req: Request, context: Context) => {
   try {
     const res = await fetch(target, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
         "Accept": "text/html"
       }
     });
@@ -26,38 +27,41 @@ export default async (req: Request, context: Context) => {
     };
 
     /* ---------------------------
-       1. Main HLS & Poster
-       These are set via html5player methods in the script
+       1. Main Video Metadata
     ----------------------------*/
     const hls = pick(/html5player\.setVideoHLS\('([^']+)'\)/);
     const poster = pick(/html5player\.setThumbUrl\('([^']+)'\)/);
-    const title = pick(/html5player\.setVideoTitle\('([^']+)'\)/) || pick(/<title>(.*?)<\/title>/);
+    const title = pick(/html5player\.setVideoTitle\('([^']+)'\)/);
+
+    // Deriving the main sprite from the poster path (standard for this player)
+    const mainSprite = poster ? poster.replace(/[^\/]+\.jpg$/, 'mozaique.jpg') : null;
 
     /* ---------------------------
-       2. Sprite (Mosaic) Configuration
-       The sprite is the "mozaique.jpg" file used for scrubbing
-    ----------------------------*/
-    // Extract sprite image URL directly or derive it from the thumb path
-    const spriteImage = poster ? poster.replace(/[^\/]+\.jpg$/, 'mozaique.jpg') : null;
-
-    // These specific keys are often in a separate script config block
-    const sprite_cols = parseInt(pick(/thumbsPerRow\s*:\s*(\d+)/) || "10");
-    const sprite_rows = parseInt(pick(/thumbsPerColumn\s*:\s*(\d+)/) || "10");
-    const sprite_total = parseInt(pick(/thumbsTotal\s*:\s*(\d+)/) || "100");
-
-    /* ---------------------------
-       3. Related Videos (Recommendations)
+       2. Recommendations (video_related)
+       Targeting 'eid' for alphanumeric IDs and 'mu' for sprites
     ----------------------------*/
     const relatedRe = /var\s+video_related\s*=\s*(\[.*?\]);/s;
     const relatedMatch = html.match(relatedRe);
-    const recommendations = relatedMatch ? JSON.parse(relatedMatch[1]).map((v: any) => ({
-      id: v.id,
-      title: v.tf || v.t,
-      poster: v.if || v.i,
-      sprite: v.mu, // Related videos use 'mu' for mosaic
-      columns: v.c || 10,
-      preview_mp4: v.ipu
-    })) : [];
+    
+    let recommendations = [];
+    if (relatedMatch) {
+      const rawData = JSON.parse(relatedMatch[1]);
+      recommendations = rawData.map((v: any) => ({
+        id: v.eid,           // Alphanumeric ID (e.g., okbhbukcff5)
+        title: v.tf || v.t,  // Full title
+        duration: v.d,       // Video duration
+        thumbs: {
+          poster: v.if || v.i,
+          preview_mp4: v.ipu, // Preview video MP4
+          sprite_image: v.mu  // Mosaic/Sprite image URL
+        },
+        sprite_config: {
+          columns: v.c || 10, // Column count from 'c' field
+          rows: 10,           // Standard row count for 100-frame mosaics
+          totalFrames: (v.c || 10) * 10
+        }
+      }));
+    }
 
     return new Response(
       JSON.stringify({
@@ -68,16 +72,19 @@ export default async (req: Request, context: Context) => {
           poster,
           hls,
           sprite: {
-            image: spriteImage,
-            columns: sprite_cols,
-            rows: sprite_rows,
-            totalFrames: sprite_total
+            image: mainSprite,
+            columns: 10, // Default for main player mosaics
+            rows: 10,
+            totalFrames: 100
           }
         },
         recommendations
       }, null, 2),
       {
-        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*"
+        }
       }
     );
 
