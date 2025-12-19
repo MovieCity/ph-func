@@ -4,21 +4,16 @@ export default async (req: Request, context: Context) => {
   const url = new URL(req.url);
   const path = url.pathname;
 
-  // Expecting /xv/{id}
+  // /xv/{id}
   const match = path.match(/\/xv\/([a-zA-Z0-9]+)/);
-  if (!match) {
-    return new Response("Not Found", { status: 404 });
-  }
+  if (!match) return new Response("Not Found", { status: 404 });
 
   const id = match[1];
   const target = `https://www.xvideos.com/embedframe/${id}`;
 
   try {
     const res = await fetch(target, {
-      headers: {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "text/html"
-      }
+      headers: { "User-Agent": "Mozilla/5.0" }
     });
 
     const html = await res.text();
@@ -31,58 +26,50 @@ export default async (req: Request, context: Context) => {
       return m ? m[1] : null;
     };
 
-    const pickAll = (re: RegExp): string[] => {
-      return [...new Set(html.match(re) || [])];
+    const parseInitObject = () => {
+      const m = html.match(/html5player\.init\(\s*({[\s\S]*?})\s*\)/);
+      return m ? JSON.parse(m[1]) : {};
     };
 
-    const parseJSArray = (name: string): any[] => {
-      const re = new RegExp(`${name}\\s*=\\s*(\\[.*?\\]);`, "s");
-      const m = html.match(re);
+    const parseJSArray = (name: string) => {
+      const m = html.match(new RegExp(`${name}\\s*=\\s*(\\[.*?\\]);`, "s"));
       return m ? JSON.parse(m[1]) : [];
     };
 
     /* ---------------------------
-       Main video
+       MAIN VIDEO (JS ONLY)
     ----------------------------*/
-    const title =
-      pick(/"video_title"\s*:\s*"([^"]+)"/) ||
-      pick(/<title>(.*?)<\/title>/);
+    const title = pick(/html5player\.setVideoTitle\("([^"]+)"\)/);
 
-    const poster =
-      pick(/poster:\s*"(https?:\/\/[^"]+)"/) ||
-      pick(/og:image"\s+content="([^"]+)"/);
+    const poster = pick(/html5player\.setPoster\("([^"]+)"\)/);
 
-    const mp4_low =
-      pick(/html5player\.setVideoUrlLow\('([^']+)'\)/);
-
-    const mp4_high =
-      pick(/html5player\.setVideoUrlHigh\('([^']+)'\)/);
-
-    const hls =
-      pick(/html5player\.setVideoHLS\('([^']+)'\)/) ||
-      pick(/(https?:\/\/[^\s"'<>]+\.m3u8)/);
+    const mp4_low = pick(/setVideoUrlLow\('([^']+)'\)/);
+    const mp4_high = pick(/setVideoUrlHigh\('([^']+)'\)/);
+    const hls = pick(/setVideoHLS\('([^']+)'\)/);
 
     /* ---------------------------
-       Sprite / preview
+       SPRITE (MAIN VIDEO)
     ----------------------------*/
     const sprite_image =
       pick(/html5player\.setThumbUrl\('([^']+)'\)/);
 
-    const sprite_cols =
-      parseInt(pick(/thumbsPerRow\s*:\s*(\d+)/) || "");
+    const init = parseInitObject();
 
-    const sprite_rows =
-      parseInt(pick(/thumbsPerColumn\s*:\s*(\d+)/) || "");
-
-    const sprite_total =
-      parseInt(pick(/thumbsTotal\s*:\s*(\d+)/) || "");
+    const sprite = {
+      image: sprite_image,
+      columns: init.thumbsPerRow ?? null,
+      rows: init.thumbsPerColumn ?? null,
+      totalFrames: init.thumbsTotal ?? null,
+      frameWidth: init.thumbWidth ?? null,
+      frameHeight: init.thumbHeight ?? null
+    };
 
     /* ---------------------------
-       Recommendations
+       RECOMMENDATIONS (UNCHANGED)
     ----------------------------*/
     const relatedRaw = parseJSArray("video_related");
 
-    const recommendations = relatedRaw.map(v => ({
+    const recommendations = relatedRaw.map((v: any) => ({
       id: v.id,
       title: v.tf || v.t,
       duration: v.d,
@@ -98,7 +85,7 @@ export default async (req: Request, context: Context) => {
     }));
 
     /* ---------------------------
-       Response
+       RESPONSE
     ----------------------------*/
     return new Response(
       JSON.stringify({
@@ -112,12 +99,7 @@ export default async (req: Request, context: Context) => {
             high: mp4_high
           },
           hls,
-          sprite: {
-            image: sprite_image,
-            columns: Number.isNaN(sprite_cols) ? null : sprite_cols,
-            rows: Number.isNaN(sprite_rows) ? null : sprite_rows,
-            totalFrames: Number.isNaN(sprite_total) ? null : sprite_total
-          }
+          sprite
         },
         recommendations
       }, null, 2),
@@ -131,14 +113,8 @@ export default async (req: Request, context: Context) => {
 
   } catch (err: any) {
     return new Response(
-      JSON.stringify({
-        success: false,
-        error: err.message
-      }, null, 2),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json" }
-      }
+      JSON.stringify({ success: false, error: err.message }, null, 2),
+      { status: 500, headers: { "Content-Type": "application/json" } }
     );
   }
 };
