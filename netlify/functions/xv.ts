@@ -2,10 +2,7 @@ import type { Context } from "@netlify/functions";
 
 export default async (req: Request, context: Context) => {
   const url = new URL(req.url);
-  const path = url.pathname;
-
-  // /xv/{id}
-  const match = path.match(/\/xv\/([a-zA-Z0-9]+)/);
+  const match = url.pathname.match(/\/xv\/([a-zA-Z0-9]+)/);
   if (!match) return new Response("Not Found", { status: 404 });
 
   const id = match[1];
@@ -15,61 +12,45 @@ export default async (req: Request, context: Context) => {
     const res = await fetch(target, {
       headers: { "User-Agent": "Mozilla/5.0" }
     });
-
     const html = await res.text();
 
-    /* ---------------------------
-       Helpers
-    ----------------------------*/
-    const pick = (re: RegExp): string | null => {
+    const pick = (re: RegExp) => {
       const m = html.match(re);
       return m ? m[1] : null;
     };
 
-    const parseInitObject = () => {
-      const m = html.match(/html5player\.init\(\s*({[\s\S]*?})\s*\)/);
-      return m ? JSON.parse(m[1]) : {};
-    };
+    /* ---------------- MAIN VIDEO ---------------- */
 
-    const parseJSArray = (name: string) => {
-      const m = html.match(new RegExp(`${name}\\s*=\\s*(\\[.*?\\]);`, "s"));
-      return m ? JSON.parse(m[1]) : [];
-    };
+    const title = pick(/var\s+video_title\s*=\s*"([^"]+)"/);
 
-    /* ---------------------------
-       MAIN VIDEO (JS ONLY)
-    ----------------------------*/
-    const title = pick(/html5player\.setVideoTitle\("([^"]+)"\)/);
-
-    const poster = pick(/html5player\.setPoster\("([^"]+)"\)/);
+    const poster =
+      pick(/var\s+video_thumb\s*=\s*"([^"]+)"/) ||
+      pick(/var\s+video_bigthumb\s*=\s*"([^"]+)"/);
 
     const mp4_low = pick(/setVideoUrlLow\('([^']+)'\)/);
     const mp4_high = pick(/setVideoUrlHigh\('([^']+)'\)/);
     const hls = pick(/setVideoHLS\('([^']+)'\)/);
 
-    /* ---------------------------
-       SPRITE (MAIN VIDEO)
-    ----------------------------*/
-    const sprite_image =
-      pick(/html5player\.setThumbUrl\('([^']+)'\)/);
+    /* ---------------- SPRITE ---------------- */
 
-    const init = parseInitObject();
+    const spriteUrl = pick(/video_sprite\s*=\s*{[^}]*url:\s*"([^"]+)"/);
+    const spriteWidth = pick(/width:\s*(\d+)/);
+    const spriteHeight = pick(/height:\s*(\d+)/);
+    const spriteTotal = pick(/total:\s*(\d+)/);
 
-    const sprite = {
-      image: sprite_image,
-      columns: init.thumbsPerRow ?? null,
-      rows: init.thumbsPerColumn ?? null,
-      totalFrames: init.thumbsTotal ?? null,
-      frameWidth: init.thumbWidth ?? null,
-      frameHeight: init.thumbHeight ?? null
-    };
+    const sprite = spriteUrl ? {
+      image: spriteUrl,
+      frameWidth: Number(spriteWidth),
+      frameHeight: Number(spriteHeight),
+      totalFrames: Number(spriteTotal)
+    } : null;
 
-    /* ---------------------------
-       RECOMMENDATIONS (UNCHANGED)
-    ----------------------------*/
-    const relatedRaw = parseJSArray("video_related");
+    /* ---------------- RECOMMENDATIONS ---------------- */
 
-    const recommendations = relatedRaw.map((v: any) => ({
+    const relatedMatch = html.match(/video_related\s*=\s*(\[[\s\S]*?\]);/);
+    const related = relatedMatch ? JSON.parse(relatedMatch[1]) : [];
+
+    const recommendations = related.map((v: any) => ({
       id: v.id,
       title: v.tf || v.t,
       duration: v.d,
@@ -84,38 +65,29 @@ export default async (req: Request, context: Context) => {
       sprite: v.mu
     }));
 
-    /* ---------------------------
-       RESPONSE
-    ----------------------------*/
-    return new Response(
-      JSON.stringify({
-        success: true,
-        id,
-        main: {
-          title,
-          poster,
-          mp4: {
-            low: mp4_low,
-            high: mp4_high
-          },
-          hls,
-          sprite
-        },
-        recommendations
-      }, null, 2),
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*"
-        }
+    return new Response(JSON.stringify({
+      success: true,
+      id,
+      main: {
+        title,
+        poster,
+        mp4: { low: mp4_low, high: mp4_high },
+        hls,
+        sprite
+      },
+      recommendations
+    }, null, 2), {
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*"
       }
-    );
+    });
 
-  } catch (err: any) {
-    return new Response(
-      JSON.stringify({ success: false, error: err.message }, null, 2),
-      { status: 500, headers: { "Content-Type": "application/json" } }
-    );
+  } catch (e: any) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: e.message
+    }), { status: 500 });
   }
 };
-
+      
