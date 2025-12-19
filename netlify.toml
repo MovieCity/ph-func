@@ -2,3 +2,9 @@
 from = "/ph/*"
 to = "/.netlify/functions/ph"
 status = 200
+
+[[redirects]]
+  from = "/xv/*"
+  to = "/.netlify/functions/xv/:splat"
+  status = 200
+  
