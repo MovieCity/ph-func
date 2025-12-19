@@ -14,42 +14,41 @@ export default async (req: Request, context: Context) => {
     });
     const html = await res.text();
 
-    /* ---------- extract flashvars ---------- */
-    const fvMatch = html.match(/var\s+flashvars\s*=\s*({[\s\S]*?});/);
-    if (!fvMatch) {
-      return new Response(JSON.stringify({
-        success: false,
-        error: "flashvars not found"
-      }), { status: 500 });
-    }
-
-    // make it JSON-safe
-    const flashvars = JSON.parse(
-      fvMatch[1]
-        .replace(/(\w+)\s*:/g, '"$1":')
-        .replace(/'/g, '"')
-    );
-
-    /* ---------- MAIN VIDEO ---------- */
-    const main = {
-      title: flashvars.video_title || null,
-      poster: flashvars.video_thumb || null,
-      mp4: {
-        low: flashvars.video_url || null,
-        high: flashvars.video_url_hd || null
-      },
-      hls: flashvars.video_hls || null,
-      sprite: flashvars.video_sprite_url ? {
-        image: flashvars.video_sprite_url,
-        frameWidth: Number(flashvars.video_sprite_width),
-        frameHeight: Number(flashvars.video_sprite_height),
-        totalFrames: Number(flashvars.video_sprite_nb_frames)
-      } : null
+    const pick = (re: RegExp) => {
+      const m = html.match(re);
+      return m ? m[1] : null;
     };
 
+    /* ---------- MAIN VIDEO ---------- */
+
+    const title = pick(/var\s+video_title\s*=\s*"([^"]+)"/);
+
+    const poster =
+      pick(/var\s+video_thumb\s*=\s*"([^"]+)"/) ||
+      pick(/var\s+video_bigthumb\s*=\s*"([^"]+)"/);
+
+    const mp4_low = pick(/setVideoUrlLow\('([^']+)'\)/);
+    const mp4_high = pick(/setVideoUrlHigh\('([^']+)'\)/);
+    const hls = pick(/setVideoHLS\('([^']+)'\)/);
+
+    /* ---------- SPRITE (MAIN VIDEO) ---------- */
+
+    const sprite = {
+      image: pick(/var\s+video_sprite_url\s*=\s*"([^"]+)"/),
+      frameWidth: Number(pick(/var\s+video_sprite_width\s*=\s*(\d+)/)),
+      frameHeight: Number(pick(/var\s+video_sprite_height\s*=\s*(\d+)/)),
+      totalFrames: Number(pick(/var\s+video_sprite_nb_frames\s*=\s*(\d+)/))
+    };
+
+    if (!sprite.image) {
+      // sprite not present on some videos
+      sprite.image = null;
+    }
+
     /* ---------- RECOMMENDATIONS ---------- */
-    const relMatch = html.match(/video_related\s*=\s*(\[[\s\S]*?\]);/);
-    const related = relMatch ? JSON.parse(relMatch[1]) : [];
+
+    const relatedMatch = html.match(/video_related\s*=\s*(\[[\s\S]*?\]);/);
+    const related = relatedMatch ? JSON.parse(relatedMatch[1]) : [];
 
     const recommendations = related.map((v: any) => ({
       id: v.id,
@@ -69,7 +68,13 @@ export default async (req: Request, context: Context) => {
     return new Response(JSON.stringify({
       success: true,
       id,
-      main,
+      main: {
+        title,
+        poster,
+        mp4: { low: mp4_low, high: mp4_high },
+        hls,
+        sprite
+      },
       recommendations
     }, null, 2), {
       headers: {
@@ -85,4 +90,4 @@ export default async (req: Request, context: Context) => {
     }), { status: 500 });
   }
 };
-
+    
