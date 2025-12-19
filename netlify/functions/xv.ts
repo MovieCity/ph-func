@@ -28,36 +28,25 @@ export default async (req: Request, context: Context) => {
     };
 
     const parseJSArray = (name: string): any[] => {
-      // Updated regex to handle 'var name = [...]'
       const re = new RegExp(`var\\s+${name}\\s*=\\s*(\\[.*?\\]);`, "s");
       const m = html.match(re);
       return m ? JSON.parse(m[1]) : [];
     };
 
     /* ---------------------------
-       Main video extraction
-       Note: Values are often set via html5player methods in the script
+       Main Video Extraction
     ----------------------------*/
-    const title = 
-      pick(/html5player\.setVideoTitle\('([^']+)'\)/) || 
-      pick(/<title>(.*?)<\/title>/);
-
-    const poster = 
-      pick(/html5player\.setThumbUrl\('([^']+)'\)/) || 
-      pick(/meta\s+property="og:image"\s+content="([^"]+)"/);
-
-    const mp4_low = pick(/html5player\.setVideoUrlLow\('([^']+)'\)/);
-    const mp4_high = pick(/html5player\.setVideoUrlHigh\('([^']+)'\)/);
-    const hls = pick(/html5player\.setVideoHLS\('([^']+)'\)/);
-
-    /* ---------------------------
-       Sprite / preview
-    ----------------------------*/
-    // Extracting sprite metadata if available in the global config
-    const sprite_image = poster; // Often the same base or derived from html5player.setThumbUrl
-    const sprite_cols = parseInt(pick(/thumbsPerRow\s*:\s*(\d+)/) || "0");
-    const sprite_rows = parseInt(pick(/thumbsPerColumn\s*:\s*(\d+)/) || "0");
-    const sprite_total = parseInt(pick(/thumbsTotal\s*:\s*(\d+)/) || "0");
+    const title = pick(/html5player\.setVideoTitle\('([^']+)'\)/) || pick(/<title>(.*?)<\/title>/);
+    const poster = pick(/html5player\.setThumbUrl\('([^']+)'\)/);
+    
+    // Attempting to extract main sprite info from config if it exists
+    const mainSprite = pick(/html5player\.setThumbUrl\('([^']+)'\)/)?.replace(/\/\d+\.jpg$/, '/mozaique_listing.jpg');
+    
+    // Main video sprite details often follow a standard 10x10 or 5x6 pattern
+    // If not found in HTML, these are the common defaults for Xvideos
+    const sprite_cols = parseInt(pick(/thumbsPerRow\s*:\s*(\d+)/) || "10");
+    const sprite_rows = parseInt(pick(/thumbsPerColumn\s*:\s*(\d+)/) || "10");
+    const sprite_total = parseInt(pick(/thumbsTotal\s*:\s*(\d+)/) || "100");
 
     /* ---------------------------
        Recommendations (video_related)
@@ -66,17 +55,18 @@ export default async (req: Request, context: Context) => {
 
     const recommendations = relatedRaw.map(v => ({
       id: v.id,
-      title: v.tf || v.t, // 'tf' is full title, 't' is short
+      title: v.tf || v.t,
       duration: v.d,
-      views: v.n,
-      rating: v.r,
       thumbs: {
-        small: v.i,
-        medium: v.il,
-        large: v.if
+        poster: v.if || v.i,
+        preview_mp4: v.ipu, // Preview MP4 URL
+        sprite_image: v.mu  // The 'mu' field is the mosaic/sprite
       },
-      preview_mp4: v.ipu, // Preview video URL
-      sprite: v.mu      // Sprite image URL
+      sprite_config: {
+        columns: v.c || 10, // The 'c' field represents columns
+        rows: 10,           // Usually matching columns for 100 frames total
+        totalFrames: (v.c || 10) * 10 
+      }
     }));
 
     return new Response(
@@ -86,13 +76,11 @@ export default async (req: Request, context: Context) => {
         main: {
           title,
           poster,
-          mp4: { low: mp4_low, high: mp4_high },
-          hls,
           sprite: {
-            image: sprite_image,
-            columns: sprite_cols || null,
-            rows: sprite_rows || null,
-            totalFrames: sprite_total || null
+            image: mainSprite,
+            columns: sprite_cols,
+            rows: sprite_rows,
+            totalFrames: sprite_total
           }
         },
         recommendations
@@ -107,14 +95,8 @@ export default async (req: Request, context: Context) => {
 
   } catch (err: any) {
     return new Response(
-      JSON.stringify({
-        success: false,
-        error: err.message // Fixed typo here
-      }, null, 2),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json" }
-      }
+      JSON.stringify({ success: false, error: err.message }, null, 2),
+      { status: 500, headers: { "Content-Type": "application/json" } }
     );
   }
 };
