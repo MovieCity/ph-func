@@ -7,7 +7,8 @@ export default async (req: Request, context: Context) => {
   const path = url.pathname;
 
   // Expecting /xv/{id}
-  const match = path.match(/\/xv\/(\d+)/);
+  const match = path.match(/\/xv\/([a-zA-Z0-9]+)/);
+  
   if (!match) {
     return new Response("Not Found", { status: 404 });
   }
