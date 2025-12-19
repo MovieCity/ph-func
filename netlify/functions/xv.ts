@@ -1,182 +1,120 @@
 import type { Context } from "@netlify/functions";
 
-export default async (req: Request, _context: Context) => {
+export default async (req: Request, context: Context) => {
   const url = new URL(req.url);
   const path = url.pathname;
 
   const match = path.match(/\/xv\/([a-zA-Z0-9]+)/);
-  if (!match) return new Response("Not Found", { status: 404 });
+  if (!match) {
+    return new Response("Not Found", { status: 404 });
+  }
 
   const id = match[1];
   const target = `https://www.xvideos.com/embedframe/${id}`;
 
   try {
     const res = await fetch(target, {
-      headers: { "User-Agent": "Mozilla/5.0" }
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
+        "Accept": "text/html"
+      }
     });
+
     const html = await res.text();
 
-    /* ========= MAIN VIDEO ========= */
-
-    const title =
-      html.match(/property="og:title"\s+content="([^"]+)"/)?.[1] ??
-      html.match(/video_title\s*=\s*"([^"]+)"/)?.[1] ??
-      null;
-
-    const poster =
-      html.match(/property="og:image"\s+content="([^"]+)"/)?.[1] ?? null;
-
-    const hls = extractExt(html, "m3u8");
-
-    const mp4 = {
-      low: extractNamedMP4(html, "low"),
-      high: extractNamedMP4(html, "high")
+    const pick = (re: RegExp): string | null => {
+      const m = html.match(re);
+      return m ? m[1] : null;
     };
 
-    /* ======== RECOMMENDATIONS ======== */
+    const parseJSArray = (name: string): any[] => {
+      // Updated regex to handle 'var name = [...]'
+      const re = new RegExp(`var\\s+${name}\\s*=\\s*(\\[.*?\\]);`, "s");
+      const m = html.match(re);
+      return m ? JSON.parse(m[1]) : [];
+    };
 
-    const related = extractVideoRelated(html);
+    /* ---------------------------
+       Main video extraction
+       Note: Values are often set via html5player methods in the script
+    ----------------------------*/
+    const title = 
+      pick(/html5player\.setVideoTitle\('([^']+)'\)/) || 
+      pick(/<title>(.*?)<\/title>/);
 
-    const recommendations = await Promise.all(
-      related.map(async (v: any) => ({
-        id: v.id,
-        eid: v.eid,
-        title: v.tf || v.t,
-        duration: v.d,
-        views: v.n,
-        rating: v.r,
-        thumbnails: {
-          small: v.i,
-          large: v.il,
-          fallback: v.if
-        },
-        preview_mp4: v.ipu,
-        sprite: v.mu
-          ? await deriveSprite(v.mu, parseDuration(v.d))
-          : null,
-        channel: {
-          name: v.pn,
-          url: v.pu
-        }
-      }))
-    );
+    const poster = 
+      pick(/html5player\.setThumbUrl\('([^']+)'\)/) || 
+      pick(/meta\s+property="og:image"\s+content="([^"]+)"/);
+
+    const mp4_low = pick(/html5player\.setVideoUrlLow\('([^']+)'\)/);
+    const mp4_high = pick(/html5player\.setVideoUrlHigh\('([^']+)'\)/);
+    const hls = pick(/html5player\.setVideoHLS\('([^']+)'\)/);
+
+    /* ---------------------------
+       Sprite / preview
+    ----------------------------*/
+    // Extracting sprite metadata if available in the global config
+    const sprite_image = poster; // Often the same base or derived from html5player.setThumbUrl
+    const sprite_cols = parseInt(pick(/thumbsPerRow\s*:\s*(\d+)/) || "0");
+    const sprite_rows = parseInt(pick(/thumbsPerColumn\s*:\s*(\d+)/) || "0");
+    const sprite_total = parseInt(pick(/thumbsTotal\s*:\s*(\d+)/) || "0");
+
+    /* ---------------------------
+       Recommendations (video_related)
+    ----------------------------*/
+    const relatedRaw = parseJSArray("video_related");
+
+    const recommendations = relatedRaw.map(v => ({
+      id: v.id,
+      title: v.tf || v.t, // 'tf' is full title, 't' is short
+      duration: v.d,
+      views: v.n,
+      rating: v.r,
+      thumbs: {
+        small: v.i,
+        medium: v.il,
+        large: v.if
+      },
+      preview_mp4: v.ipu, // Preview video URL
+      sprite: v.mu      // Sprite image URL
+    }));
 
     return new Response(
-      JSON.stringify(
-        {
-          success: true,
-          id,
-          main: {
-            title,
-            poster,
-            hls,
-            mp4
-          },
-          recommendations
+      JSON.stringify({
+        success: true,
+        id,
+        main: {
+          title,
+          poster,
+          mp4: { low: mp4_low, high: mp4_high },
+          hls,
+          sprite: {
+            image: sprite_image,
+            columns: sprite_cols || null,
+            rows: sprite_rows || null,
+            totalFrames: sprite_total || null
+          }
         },
-        null,
-        2
-      ),
-      { headers: { "Content-Type": "application/json" } }
+        recommendations
+      }, null, 2),
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*"
+        }
+      }
     );
+
   } catch (err: any) {
     return new Response(
-      JSON.stringify({ success: false, error: err.message }, null, 2),
-      { status: 500, headers: { "Content-Type": "application/json" } }
+      JSON.stringify({
+        success: false,
+        error: err.message // Fixed typo here
+      }, null, 2),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      }
     );
   }
 };
-
-/* ============ HELPERS ============ */
-
-function extractExt(text: string, ext: string): string[] {
-  text = text.replace(/\\\//g, "/");
-  const re = new RegExp(
-    `(https?:\\/\\/[^\\s"'<>]+\\.${ext}(?:\\?[^\\s"'<>]*)?)`,
-    "gi"
-  );
-  return [...new Set(text.match(re) || [])];
-}
-
-function extractNamedMP4(html: string, quality: "low" | "high") {
-  const re = new RegExp(
-    `setVideoUrl${quality === "high" ? "High" : "Low"}\\(['"]([^'"]+)`,
-    "i"
-  );
-  return html.match(re)?.[1] ?? null;
-}
-
-function extractVideoRelated(html: string): any[] {
-  const m = html.match(/video_related\s*=\s*(\[[\s\S]*?\]);/);
-  if (!m) return [];
-  try {
-    return JSON.parse(m[1]);
-  } catch {
-    return [];
-  }
-}
-
-function parseDuration(d: string): number {
-  const m = d?.match(/(\d+)\s*min/);
-  return m ? parseInt(m[1], 10) * 60 : 0;
-}
-
-/* ===== SPRITE DERIVATION (XV STYLE) ===== */
-
-async function deriveSprite(url: string, duration: number) {
-  const res = await fetch(url);
-  const buf = new Uint8Array(await res.arrayBuffer());
-  const { width, height } = readJpegSize(buf);
-
-  const aspect = 9 / 16;
-  const columnOptions = [5, 10];
-
-  for (const cols of columnOptions) {
-    const frameWidth = width / cols;
-    const frameHeight = frameWidth * aspect;
-    const rows = height / frameHeight;
-
-    if (
-      Number.isInteger(frameWidth) &&
-      Number.isInteger(frameHeight) &&
-      Number.isInteger(rows)
-    ) {
-      const total = cols * rows;
-      return {
-        image: url,
-        image_width: width,
-        image_height: height,
-        frame_width: frameWidth,
-        frame_height: frameHeight,
-        columns: cols,
-        rows,
-        total_frames: total,
-        seconds_per_frame:
-          duration && total ? duration / total : null,
-        method: "xvideos-derived"
-      };
-    }
-  }
-
-  return {
-    image: url,
-    image_width: width,
-    image_height: height,
-    method: "undetermined"
-  };
-}
-
-/* ===== JPEG SIZE ===== */
-
-function readJpegSize(data: Uint8Array) {
-  for (let i = 0; i < data.length; i++) {
-    if (data[i] === 0xff && (data[i + 1] === 0xc0 || data[i + 1] === 0xc2)) {
-      return {
-        height: (data[i + 5] << 8) + data[i + 6],
-        width: (data[i + 7] << 8) + data[i + 8]
-      };
-    }
-  }
-  return { width: 0, height: 0 };
-}
-
