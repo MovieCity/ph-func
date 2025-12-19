@@ -14,80 +14,65 @@ export default async (req: Request, context: Context) => {
     });
     const html = await res.text();
 
-    const pick = (re: RegExp) => {
-      const m = html.match(re);
-      return m ? m[1] : null;
-    };
+    // Extract main JS variables
+    const mainTitle = extractVar(html, "video_title");
+    const mainPoster = extractVar(html, "video_thumb");
+    const m3u8 = extractVar(html, "m3u8");
+    const mp4_low = extractVar(html, "mp4_low");
+    const mp4_high = extractVar(html, "mp4_high");
 
-    /* ---------- MAIN VIDEO ---------- */
-
-    const title = pick(/var\s+video_title\s*=\s*"([^"]+)"/);
-
-    const poster =
-      pick(/var\s+video_thumb\s*=\s*"([^"]+)"/) ||
-      pick(/var\s+video_bigthumb\s*=\s*"([^"]+)"/);
-
-    const mp4_low = pick(/setVideoUrlLow\('([^']+)'\)/);
-    const mp4_high = pick(/setVideoUrlHigh\('([^']+)'\)/);
-    const hls = pick(/setVideoHLS\('([^']+)'\)/);
-
-    /* ---------- SPRITE (MAIN VIDEO) ---------- */
-
-    const sprite = {
-      image: pick(/var\s+video_sprite_url\s*=\s*"([^"]+)"/),
-      frameWidth: Number(pick(/var\s+video_sprite_width\s*=\s*(\d+)/)),
-      frameHeight: Number(pick(/var\s+video_sprite_height\s*=\s*(\d+)/)),
-      totalFrames: Number(pick(/var\s+video_sprite_nb_frames\s*=\s*(\d+)/))
-    };
-
-    if (!sprite.image) {
-      // sprite not present on some videos
-      sprite.image = null;
+    // Sprite info
+    const muUrl = extractVar(html, "mu"); // may be null
+    let sprite = null;
+    if (muUrl) {
+      const size = await getImageSize(muUrl);
+      if (size) {
+        // Xvideos uses 1-row sprite normally
+        const frameCount = extractVar(html, "vtt_frames") || 1; 
+        sprite = {
+          url: muUrl,
+          width: size.width / frameCount,
+          height: size.height,
+          frames: frameCount
+        };
+      }
     }
 
-    /* ---------- RECOMMENDATIONS ---------- */
-
-    const relatedMatch = html.match(/video_related\s*=\s*(\[[\s\S]*?\]);/);
-    const related = relatedMatch ? JSON.parse(relatedMatch[1]) : [];
-
-    const recommendations = related.map((v: any) => ({
-      id: v.id,
-      title: v.tf || v.t,
-      duration: v.d,
-      views: v.n,
-      rating: v.r,
-      thumbs: {
-        small: v.i,
-        medium: v.il,
-        large: v.if
-      },
-      preview_mp4: v.ipu,
-      sprite: v.mu
+    // Recommendations
+    const related = extractVar(html, "video_related") || [];
+    const recommendations = related.map((r: any) => ({
+      id: r.id,
+      title: r.title,
+      thumbnail: r.thumb,
+      duration: r.duration,
+      mu: r.mu || null
     }));
 
     return new Response(JSON.stringify({
       success: true,
-      id,
-      main: {
-        title,
-        poster,
-        mp4: { low: mp4_low, high: mp4_high },
-        hls,
-        sprite
-      },
+      main: { id, title: mainTitle, poster: mainPoster, m3u8, mp4_low, mp4_high, sprite },
       recommendations
-    }, null, 2), {
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*"
-      }
-    });
+    }, null, 2), { headers: { "Content-Type": "application/json" } });
 
-  } catch (e: any) {
-    return new Response(JSON.stringify({
-      success: false,
-      error: e.message
-    }), { status: 500 });
+  } catch (err: any) {
+    return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500, headers: { "Content-Type": "application/json" } });
   }
 };
-    
+
+// Extract JS variable from HTML
+function extractVar(html: string, name: string) {
+  const re = new RegExp(`${name}\\s*[:=]\\s*["']([^"']+)["']`, "i");
+  const match = html.match(re);
+  return match ? match[1] : null;
+}
+
+// Get image size
+async function getImageSize(url: string) {
+  try {
+    const res = await fetch(url);
+    const buffer = Buffer.from(await res.arrayBuffer());
+    const sizeOf = (await import("image-size")).default;
+    return sizeOf(buffer);
+  } catch { return null; }
+}
+
